@@ -1,0 +1,44 @@
+# Default configuration for DSD-CRNN project
+
+# Model configuration
+model:
+  name: "CRNN"
+  input_channels: 1
+  hidden_size: 256
+  num_classes: 10
+
+# Data configuration
+data:
+  data_path: "./data"
+  batch_size: 32
+  num_workers: 4
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+
+# Synthetic data generation (outline)
+synthetic_data:
+  enabled: false
+  data_shape: [1, 32, 128]  # [channels, height, width]
+  num_classes: 10
+  num_train_samples: 1000
+  num_val_samples: 200
+  num_test_samples: 200
+  noise_level: 0.1
+
+# Training configuration
+training:
+  epochs: 100
+  learning_rate: 0.001
+  optimizer: "Adam"
+  loss_function: "CrossEntropyLoss"
+  device: "cuda"  # or "cpu"
+  save_dir: "./checkpoints"
+  log_interval: 10
+  save_interval: 5
+
+# Evaluation configuration
+evaluation:
+  checkpoint_path: "./checkpoints/best_model.pth"
+  batch_size: 64
+  metrics: ["accuracy", "precision", "recall"]

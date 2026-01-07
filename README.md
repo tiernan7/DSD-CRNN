@@ -111,9 +111,9 @@ Base class that all models inherit from, providing:
 
 ### CRNN (Convolutional Recurrent Neural Network)
 Placeholder for CRNN architecture combining:
-- Convolutional layers for feature extraction
-- Recurrent layers (LSTM/GRU) for sequence modeling
-- Fully connected layers for classification
+- Input dimensions: number of species in system
+- Linear hidden layer dimensions: numbers of allowed reactions between species
+- Output layer 
 
 ## Configuration
 
@@ -135,17 +135,9 @@ This is a barebones project structure. All core functionality is outlined but no
 - ⬜ Training loop implementation (TODO)
 - ⬜ Evaluation implementation (TODO)
 
-## Contributing
-
-When implementing features:
-1. Follow the existing code structure
-2. Add corresponding tests in `tests/`
-3. Update this README with usage examples
-4. Ensure code follows PEP 8 style guidelines
-
 ## License
 
-MIT License (or specify your license)
+MIT License
 
 ## Contact
 

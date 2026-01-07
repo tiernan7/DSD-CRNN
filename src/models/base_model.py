@@ -38,6 +38,14 @@ class BaseModel(nn.Module):
         
         Args:
             path (str): Path to save the checkpoint
+            
+        Note:
+            Implementation should save:
+            - model state_dict
+            - optimizer state_dict (if available)
+            - epoch number
+            - training metrics
+            Format: PyTorch .pth file
         """
         # TODO: Implement checkpoint saving
         pass

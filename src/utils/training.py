@@ -39,13 +39,14 @@ def validate_epoch(model, val_loader, criterion, device):
         device: Device to validate on (CPU/GPU)
         
     Returns:
-        tuple: (average_loss, accuracy)
+        tuple: (average_loss, metrics_dict) where metrics_dict contains
+               accuracy and other relevant validation metrics
     """
     # TODO: Implement validation loop for one epoch
     # This should include:
     # - Setting model to evaluation mode
     # - Iterating through batches without gradients
-    # - Computing metrics
+    # - Computing metrics (loss, accuracy, etc.)
     pass
 
 

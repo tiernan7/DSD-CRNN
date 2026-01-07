@@ -110,12 +110,18 @@ def create_synthetic_dataset(config):
             - num_train_samples: Number of training samples
             - num_val_samples: Number of validation samples
             - num_test_samples: Number of test samples
+            - noise_level (optional): Level of noise to add (default: 0.1)
             
     Returns:
         dict: Dictionary containing train, validation, and test datasets
+        
+    Note:
+        Missing required keys will raise KeyError during implementation.
+        Optional keys will use default values if not provided.
     """
     # TODO: Implement dataset creation from config
     # This should include:
+    # - Validating required configuration keys
     # - Creating generator instances
     # - Generating train/val/test splits
     # - Returning organized datasets

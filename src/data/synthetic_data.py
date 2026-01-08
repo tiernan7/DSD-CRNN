@@ -187,26 +187,179 @@ class SyntheticDataGenerator:
         
                 
             
-    
-    def canonicalize_composition_matrix(self, composition_matrix):
-        """
-        Canonicalize a composition matrix to ensure uniqueness.
-        """
-        pass
-    
-    def structure_metadata(self, A):
+    def structure_metadata(self, A, partition):
         """
         Structure metadata from a composition matrix.
+        
+        Returns:
+            dict: Mapping from species to atom count vectors and type
         """
-        pass
+        return {
+            name: {
+                "composition": A[:, i],
+                "type": ("input" if name in partition.inputs else
+                        "output" if name == partition.output else
+                        "hidden")
+            }
+            for i, name in enumerate(partition.species)
+        }
+
     
     def generate_candidate_reactions(self, partition, composition_matrix):
         """
-        Generate all candidate reactions for a given partition and composition matrix
+        Generate all candidate stoichiometrically valid reactions
+        for a given partition and composition matrix.
+
+        Args:
+            partition (Partition): Defines the species roles
+            composition_matrix (np.ndarray): Shape (num_atoms, num_species)
+
+        Returns:
+            list[Reaction]: Set of valid, mass-conserving reactions
         """
-        pass
+        num_species = partition.n_species
+        reactions = set()
+
+        species_indices = list(range(num_species))
+        # reactant/product pairs of size 1 or 2
+        pairings = list(combinations_with_replacement(species_indices, 2)) + [(i,) for i in species_indices]
+
+        for reactants in pairings:
+            lhs = sum(composition_matrix[:, r] for r in reactants)
+
+            for products in pairings:
+                rhs = sum(composition_matrix[:, p] for p in products)
+
+                if np.array_equal(lhs, rhs) and set(reactants) != set(products):
+                    # sorted tuples prevent duplicates due to ordering
+                    reactions.add(Reaction(
+                        reactants=tuple(sorted(reactants)),
+                        products=tuple(sorted(products))
+                    ))
+
+        return list(reactions)
+    
+    
+    def prune_unused_species(self, composition_matrix, partition, reactions):
+        """
+        Remove species not participating in any reaction.
+
+        Returns:
+            - pruned composition_matrix
+            - pruned partition
+            - mapping from old to new species indices (optional)
+        """
+        used_species = set()
+        for r in reactions:
+            used_species.update(r.reactants)
+            used_species.update(r.products)
+        used_species = sorted(used_species)
+
+        # Prune matrix
+        pruned_matrix = composition_matrix[:, used_species]
+
+        # Rebuild partition species list
+        species = partition.species
+        used_names = [species[i] for i in used_species]
+        new_inputs = [s for s in used_names if s in partition.inputs]
+        new_hidden = [s for s in used_names if s in partition.hidden]
+        new_output = partition.output if partition.output in \
+        used_names else None
+
+        pruned_partition = Partition(
+            inputs=new_inputs,
+            hidden=new_hidden,
+            output=new_output
+        )
+
+        return pruned_matrix, pruned_partition
+    
+    def setup_hardcoded_1latent_example(self):
+        """
+        Hardcode a 1-step cascade with intermediate:
+            S_1 + S_2 → S_3
+            S_3 → S_4 + S_out
+        With a valid atom-conserving composition matrix.
+        """
+        # Partition matches naming convention
+        partition = Partition(inputs=['S_1', 'S_2'], hidden=['S_3', 'S_4'], output='S_out')
+        # Index order: [S_1, S_2, S_3, S_4, S_out]
+        # Atoms: A, B, and C
+        composition_matrix = np.array([
+            [1, 0, 1, 1, 0],  # Atom A
+            [0, 1, 1, 1, 0],  # Atom B
+            [0, 1, 1, 0, 1],  # Atom C
+        ])
+
+        # Optional check
+        assert self.is_column_space_reachable(composition_matrix, partition), "Composition not reachable"
+
+        # Use indices [0,1,2,3,4] for species in partition.species
+        reactions = [
+            Reaction(reactants=(0, 1), products=(2,)),  # S_1 + S_2 → S_3
+            Reaction(reactants=(2,), products=(3, 4)),   # S_3 → S_4 + S_out
+        ]
+
+        return composition_matrix, partition, reactions
+
 
     
+    
+    def enumerate_label_only_reactions(species: list[str], max_order=2):
+        """
+        Enumerate all possible reactions up to max_order (default: bimolecular)
+        without atom constraints, using just species names.
+        
+        Returns:
+            list[Reaction]: All nontrivial reactions (reactants ≠ products)
+        """
+        # All uni/bi-molecular reactant and product combinations
+        reactant_combos = list(combinations_with_replacement(species, r=1)) + \
+                        list(combinations_with_replacement(species, r=2))
+        product_combos = list(combinations_with_replacement(species, r=1)) + \
+                        list(combinations_with_replacement(species, r=2))
+        
+        reactions = set()
+        for r in reactant_combos:
+            for p in product_combos:
+                if sorted(r) != sorted(p):  # exclude trivial identity reactions
+                    reactions.add(Reaction(
+                        reactants=tuple(sorted(r)),
+                        products=tuple(sorted(p))
+                    ))
+        
+        return sorted(reactions, key=lambda rxn: (rxn.reactants, rxn.products))
+    
+    def generate_all_mass_conserving_reactions(partition: Partition, composition_matrix: np.ndarray):
+        """
+        Given a species partition and composition matrix (atoms × species),
+        generate all stoichiometrically valid reactions (1 or 2 reactants → 1 or 2 products).
+        """
+
+        n_species = partition.n_species
+        reactions = set()
+
+        # Species indices
+        indices = list(range(n_species))
+
+        # Reaction forms: uni/bi → uni/bi
+        reactant_combos = list(combinations_with_replacement(indices, 2)) + [(i,) for i in indices]
+        product_combos  = list(combinations_with_replacement(indices, 2)) + [(i,) for i in indices]
+
+        for reactants in reactant_combos:
+            lhs = sum(composition_matrix[:, i] for i in reactants)
+
+            for products in product_combos:
+                rhs = sum(composition_matrix[:, i] for i in products)
+
+                # Valid if atom-balanced and not a trivial identity
+                if np.array_equal(lhs, rhs) and set(reactants) != set(products):
+                    reactions.add(Reaction(
+                        reactants=tuple(sorted(reactants)),
+                        products=tuple(sorted(products))
+                    ))
+
+        return list(reactions)
     
     def generate_sample(self, params):
         """

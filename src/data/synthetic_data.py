@@ -5,35 +5,49 @@ This module provides functions to generate synthetic data that can be used
 for training and testing the models when real data is not available.
 """
 
+from dataclasses import dataclass
+from matplotlib.pylab import lstsq
 import numpy as np
+from numpy.linalg import matrix_rank
 import torch
-from  itertools import product
+from  itertools import combinations_with_replacement
 
-class Reaction:
-    """
-    Hold a representation of a chemical reaction, used for constructing synthetic data.
-    """
-    def __init__(self, reactants, products):
-        """
-        Initialize a Reaction instance.
-        Reaction rates assume nM concentrations.
-        Args:
-            reactants (list): List of reactant species names
-            products (list): List of product species names
-            k_f (float): Forward reaction rate constant
-            k_r (float): Reverse reaction rate constant
-        """
-        self.reactants = reactants
-        self.products = products
-        self.k_f = None
-        self.k_r = None
+@dataclass
+class Partition:
+    inputs: list[str]
+    hidden: list[str]
+    output: str = "S_out"
+
+    @property
+    def species(self) -> list[str]:
+        return self.inputs + self.hidden + [self.output]
+
+    @property
+    def n_inputs(self) -> int: return len(self.inputs)
+
+    @property
+    def n_hidden(self) -> int: return len(self.hidden)
+
+    @property
+    def n_species(self) -> int: return len(self.species)
         
-    def set_rate_constants(self, k_f, k_r):
-        self.k_f = k_f
-        self.k_r = k_r
+    @property
+    def input_indices(self) -> list[int]:
+        return [self.species.index(name) for name in self.inputs]
+
+    @property
+    def hidden_indices(self) -> list[int]:
+        return [self.species.index(name) for name in self.hidden]
+
+    @property
+    def output_indices(self) -> list[int]:
+        return [self.species.index(self.output)]
     
-    def __repr__(self):
-        return f"Reaction({self.reactants} <-> {self.products}, k_f={self.k_f}, k_r={self.k_r})"
+    
+@dataclass(frozen=True)
+class Reaction:
+    reactants: tuple[int, ...]
+    products: tuple[int, ...]
     
     
 
@@ -43,7 +57,7 @@ class SyntheticDataGenerator:
     
     The training data consists of time-course trajectories of a single output species from a combinatorial set of idealized chemical reactions
     """
-    
+    #TODO: incorporate stoichiometry in reactions
     def __init__(self, 
                  number_of_nonoutput_species, 
                  reaction_rate_ranges, 
@@ -51,14 +65,7 @@ class SyntheticDataGenerator:
                  noise_level=0.1):
         """
         Initialize the synthetic data generator.
-        Can pull from all possible reaction configurations given the number of non-output species, assuming 1 output species and at least 1 input species.
-
-        
-        Args:
-            number_of_nonoutput_species (int): Number of hidden species in the reactions (total number of species will be this + 1 output species)
-            reaction_rate_ranges (dict): Ranges for reaction rate constants
-            initial_concentration_range (tuple): Range for initial concentrations of species
-            noise_level (float): Level of noise to add to the data
+        Can pull from all possible reaction configurations given the number of non-output species, assuming 1 output species and at least 1 input species.      
         """
         # TODO: Implement initialization
         # This should include:
@@ -69,66 +76,14 @@ class SyntheticDataGenerator:
         self.reaction_rate_ranges = reaction_rate_ranges
         self.initial_concentration_range = initial_concentration_range
         self.noise_level = noise_level
+
         
         # Create all possible divisions of species into input, hidden, and output
-        self.partitions = self.generate_all_species_partitions() 
-        # For each parition, generate the set of all allowed reactions
-        self.reaction_sets = []
-        for partition in self.partitions:
-            self.reaction_sets.append(self.generate_reaction_set(partition))
-        
-    def print_possible_sets(self):
-        """
-        List all possible reactions based on the current configuration.
-        
-        Returns:
-            list: List of Reaction instances
-        """
-        for i, partition in enumerate(self.partitions):
-            print(f"Partition {i+1}: Inputs: {partition['inputs']}, Hidden: {partition['hidden']}, Output: {partition['output']}")
-            reactions = self.reaction_sets[i]
-            for reaction in reactions:
-                print(reaction)
-            print("\n")
-    
-    def generate_reaction_set(self, partition):
-        """
-        Generate the set of all allowed reactions for a given partition of species.
-        Includes all reactions of the form 
-        A + B <-> C + D
-        A + B <-> C
-        A + B <-> D
-        A <-> C + D
-        B <-> C + D
-        A <-> C
-        B <-> C
-        A <-> D
-        B <-> D
-        where A and B are input or hidden species, and C and D are hidden or output species.
-        
-        Args:
-            partition (dict): A dictionary with keys 'inputs', 'hidden', 'output' listing species names
-            
-        Returns:
-            list: List of Reaction instances
-        """
-        
-        # Get the set of all tuples of input or hidden species of length 2 or 1
-        reactant_candidates = list(product(partition['inputs'] + partition['hidden'], repeat=2)) + list(product(partition['inputs'] + partition['hidden'], repeat=1))
-        # Get the set of all tuples of hidden or output species of length 2 or 1
-        product_candidates = list(product(partition['hidden'] + [partition['output']], repeat=2)) + list(product(partition['hidden'] + [partition['output']], repeat=1))
-        
-        #Create all possible reactions from these candidates
-        reactions = []
-        for reactants in reactant_candidates:
-            for products in product_candidates:
-                # Avoid reactions where reactants and products are the same
-                if set(reactants) != set(products):
-                    # Generate random reaction rates within specified ranges
-                    reactions.append(Reaction(reactants, products))
-        return reactions
-        
-    def generate_all_species_partitions(self):
+        self.partitions = self.generate_partitions() 
+
+   
+
+    def generate_partitions(self):
         """
         Generate all possible partitions between input, hidden, and output species.
         Preserves at least 1 input and 1 output species.
@@ -140,47 +95,118 @@ class SyntheticDataGenerator:
         output_species = 'S_out'
         non_output_species = [f'S_{i}' for i in range(1, self.number_of_nonoutput_species + 1 )]
         partitions = []
-        for number_of_inputs in range(1, self.number_of_nonoutput_species):
+        for number_of_inputs in range(1, self.number_of_nonoutput_species + 1):
             input_species = list(non_output_species[:number_of_inputs])
             hidden_species = list(non_output_species[number_of_inputs:])
-            partitions.append({'inputs': input_species, 'hidden': hidden_species, 'output': output_species})
+            partitions.append(Partition(inputs=input_species, hidden=hidden_species))
         return partitions
         
-    
-    def generate_reaction_set_from_species(self, reactants, products):
-        """
-        Generate a set of reaxtions and producs each length 2
-        Return the reactions of the form
+    def is_column_space_reachable(self, C, partition, tol=1e-8):
+        # Output must be reachable from input + hidden
+        C_in_hid = C[:, partition.input_indices + partition.hidden_indices]
+        C_out = C[:, partition.output_indices]
+
+        for j in range(C_out.shape[1]):
+            c_out_j = C_out[:, j]
+            x, res, _, _ = lstsq(C_in_hid, c_out_j)
+            residual = np.linalg.norm(C_in_hid @ x - c_out_j)
+            if residual > tol:
+                return False
+
+        # Additional check: if there are hidden species,
+        # output must also be reachable from hidden alone
+        if partition.n_hidden > 0:
+            C_hid = C[:, partition.hidden_indices]
+            for j in range(C_out.shape[1]):
+                c_out_j = C_out[:, j]
+                x, res, _, _ = lstsq(C_hid, c_out_j)
+                residual = np.linalg.norm(C_hid @ x - c_out_j)
+                if residual > tol:
+                    return False
+
+        return True
 
         
-        Args:
-            reactants (list): List of reactant species names
-            products (list): List of product species names
-        Returns:
-            list: List of reaction dictionaries
-        """
+        
     
-    def generate_parameter_set(self):
+    def sample_composition_matrix(self, partition, atomic_components, max_components_per_species, rank_target, seed):
         """
-        Generate a set of parameters for synthetic data generation.
-        
-        Retuirns:
-            dict: A dictionary of parameters for data generation
-        """
-        ut  
-    def write_paramaters_to_file(self, params, file_path):
-        """
-        Write generated parameters to a file for record-keeping.
+        Sample a composition matrix for a given partition.
         
         Args:
-            params (dict): Parameters to write
-            file_path (str): Path to the file where parameters will be saved
+            partition (Partition): The partition of species across input, hidden, and output
+            atomic_components (int): Number of atomic components to use in the composition matrix
+            max_components_per_species (int): Maximum number of components per species
+            rank_target (int): Target rank for the composition matrix
+            seed (int): Random seed for reproducibility
+            
         """
-        # TODO: Implement parameter writing
-        # This should include:
-        # - Formatting parameters
-        # - Writing to a file
+        def sample_valid_species_column(M, max_atoms, rng, seen):
+            while True:
+                col = np.zeros(M, dtype=int)
+                values = list(range(0, max_atoms + 1))
+                remaining = max(values)
+                for i in range(M):
+                    if not values:
+                        break
+                    value = rng.choice(values)
+                    col[i] = value
+                    remaining -= value
+                    values = [v for v in values if v <= remaining]
+                    if remaining <= 0:
+                        break
+                if col.sum() == 0:
+                    continue
+                if tuple(col) in seen:
+                    continue
+                seen.add(tuple(col))
+                return col
+
+        
+        
+        
+        N = partition.n_species
+        M = atomic_components
+        
+        
+        
+        
+        rng = np.random.default_rng(seed)
+
+        is_reachable = False
+        while not(is_reachable):
+            composition_matrix = np.zeros((M,N), dtype=int)
+            seen = set()
+            j = 0
+            while j < N:
+                col = sample_valid_species_column(M, max_components_per_species, rng, seen)
+                composition_matrix[:, j] = col
+                j += 1
+            is_reachable = self.is_column_space_reachable(composition_matrix, partition)
+        return composition_matrix
+        
+                
+            
+    
+    def canonicalize_composition_matrix(self, composition_matrix):
+        """
+        Canonicalize a composition matrix to ensure uniqueness.
+        """
         pass
+    
+    def structure_metadata(self, A):
+        """
+        Structure metadata from a composition matrix.
+        """
+        pass
+    
+    def generate_candidate_reactions(self, partition, composition_matrix):
+        """
+        Generate all candidate reactions for a given partition and composition matrix
+        """
+        pass
+
+    
     
     def generate_sample(self, params):
         """

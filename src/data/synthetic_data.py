@@ -6,11 +6,12 @@ for training and testing the models when real data is not available.
 """
 
 from dataclasses import dataclass
-from matplotlib.pylab import lstsq
+from numpy.linalg import lstsq
 import numpy as np
 from numpy.linalg import matrix_rank
 import torch
 from  itertools import combinations_with_replacement
+from scipy.integrate import solve_ivp
 
 @dataclass
 class Partition:
@@ -52,36 +53,102 @@ class Reaction:
     
 
 class SyntheticDataGenerator:
-    """
-    Generator for synthetic training data.
-    
-    The training data consists of time-course trajectories of a single output species from a combinatorial set of idealized chemical reactions
-    """
-    #TODO: incorporate stoichiometry in reactions
-    def __init__(self, 
-                 number_of_nonoutput_species, 
-                 reaction_rate_ranges, 
-                 initial_concentration_range, 
-                 noise_level=0.1):
-        """
-        Initialize the synthetic data generator.
-        Can pull from all possible reaction configurations given the number of non-output species, assuming 1 output species and at least 1 input species.      
-        """
-        # TODO: Implement initialization
-        # This should include:
-        # - Storing data generation parameters
-        # - Setting random seeds for reproducibility
-        
+    def __init__(
+        self,
+        number_of_nonoutput_species=None,
+        reaction_rate_ranges=(1e-3, 1e-1),
+        initial_concentration_range=(1.0, 10.0),
+        noise_level=0.05,
+        t_end=40.0,
+        n_timepoints=50,
+        seed=None,
+    ):
+        self.rng = np.random.default_rng(seed)
+
         self.number_of_nonoutput_species = number_of_nonoutput_species
         self.reaction_rate_ranges = reaction_rate_ranges
         self.initial_concentration_range = initial_concentration_range
         self.noise_level = noise_level
 
+        self.t_end = t_end
+        self.n_timepoints = n_timepoints
+
+        self.seed = seed
+
+
+        self.partitions = (
+            self.generate_partitions()
+            if number_of_nonoutput_species is not None
+            else None
+        )
+
         
-        # Create all possible divisions of species into input, hidden, and output
-        self.partitions = self.generate_partitions() 
+    @classmethod
+    def from_hardcoded_1latent(
+        cls,
+        reaction_rate_ranges=(1e-3, 1e-1),
+        initial_concentration_range=(1.0, 10.0),
+        # optional fixed values (override ranges if provided)
+        reaction_rates=None,
+        initial_concentrations=None,
+        noise_level=0.05,
+        t_end=40.0,
+        n_timepoints=50,
+        seed=None,
+    ):
+        obj = cls(
+            number_of_nonoutput_species=None,
+            initial_concentration_range=initial_concentration_range,
+            noise_level=noise_level,
+            t_end=t_end,
+            n_timepoints=n_timepoints,
+            seed=seed,
+        )
+
+        (
+            obj.composition_matrix,
+            obj.partition,
+            obj.reactions,
+        ) = obj.setup_hardcoded_1latent_example()
+
+        # Initialize k and c0 either from fixed values or by sampling from ranges
+        obj.k = reaction_rates 
+
+        obj.c0 = (
+            np.asarray(initial_concentrations, dtype=float)
+            if initial_concentrations is not None
+            else obj._sample_c0()
+        )
+
+        assert len(obj.k) == len(obj.reactions)
+        assert len(obj.c0) == obj.partition.n_species
+
+        obj._mode = "hardcoded_1latent"
+        return obj
+
 
    
+    def _sample_k(self):
+        """
+        Sample reaction rate constants (log-uniform).
+        """
+        lo, hi = self.reaction_rate_ranges
+        log_k = self.rng.uniform(np.log(lo), np.log(hi), size=len(self.reactions))
+        return np.exp(log_k)
+
+
+    def _sample_c0(self):
+        """
+        Sample initial concentrations.
+        Inputs get nonzero concentrations; hidden/output start at 0.
+        """
+        lo, hi = self.initial_concentration_range
+        c0 = np.zeros(self.partition.n_species,  dtype=float)
+
+        for idx in self.partition.input_indices:
+            c0[idx] = self.rng.uniform(lo, hi)
+
+        return c0
 
     def generate_partitions(self):
         """
@@ -127,152 +194,69 @@ class SyntheticDataGenerator:
         return True
 
         
-        
-    
-    def sample_composition_matrix(self, partition, atomic_components, max_components_per_species, rank_target, seed):
+    def _build_stoichiometric_matrix(self):
         """
-        Sample a composition matrix for a given partition.
-        
-        Args:
-            partition (Partition): The partition of species across input, hidden, and output
-            atomic_components (int): Number of atomic components to use in the composition matrix
-            max_components_per_species (int): Maximum number of components per species
-            rank_target (int): Target rank for the composition matrix
-            seed (int): Random seed for reproducibility
-            
-        """
-        def sample_valid_species_column(M, max_atoms, rng, seen):
-            while True:
-                col = np.zeros(M, dtype=int)
-                values = list(range(0, max_atoms + 1))
-                remaining = max(values)
-                for i in range(M):
-                    if not values:
-                        break
-                    value = rng.choice(values)
-                    col[i] = value
-                    remaining -= value
-                    values = [v for v in values if v <= remaining]
-                    if remaining <= 0:
-                        break
-                if col.sum() == 0:
-                    continue
-                if tuple(col) in seen:
-                    continue
-                seen.add(tuple(col))
-                return col
-
-        
-        
-        
-        N = partition.n_species
-        M = atomic_components
-        
-        
-        
-        
-        rng = np.random.default_rng(seed)
-
-        is_reachable = False
-        while not(is_reachable):
-            composition_matrix = np.zeros((M,N), dtype=int)
-            seen = set()
-            j = 0
-            while j < N:
-                col = sample_valid_species_column(M, max_components_per_species, rng, seen)
-                composition_matrix[:, j] = col
-                j += 1
-            is_reachable = self.is_column_space_reachable(composition_matrix, partition)
-        return composition_matrix
-        
-                
-            
-    def structure_metadata(self, A, partition):
-        """
-        Structure metadata from a composition matrix.
-        
+        Build the stoichiometric matrix S from the reactions.
         Returns:
-            dict: Mapping from species to atom count vectors and type
+            np.ndarray: Stoichiometric matrix S of shape (n_species, n_reactions)
         """
-        return {
-            name: {
-                "composition": A[:, i],
-                "type": ("input" if name in partition.inputs else
-                        "output" if name == partition.output else
-                        "hidden")
-            }
-            for i, name in enumerate(partition.species)
-        }
+        n_species = self.partition.n_species
+        n_rxns = len(self.reactions)
+        S = np.zeros((n_species, n_rxns), dtype=float)
 
-    
-    def generate_candidate_reactions(self, partition, composition_matrix):
-        """
-        Generate all candidate stoichiometrically valid reactions
-        for a given partition and composition matrix.
+        for j, rxn in enumerate(self.reactions):
+            for i in rxn.reactants:
+                S[i, j] -= 1
+            for i in rxn.products:
+                S[i, j] += 1
 
-        Args:
-            partition (Partition): Defines the species roles
-            composition_matrix (np.ndarray): Shape (num_atoms, num_species)
+        return S
 
-        Returns:
-            list[Reaction]: Set of valid, mass-conserving reactions
-        """
-        num_species = partition.n_species
-        reactions = set()
+    def _rate_vector(self, c):
+        r = np.zeros(len(self.reactions), dtype=float)
+        c = np.clip(c, 0.0, np.inf)
 
-        species_indices = list(range(num_species))
-        # reactant/product pairs of size 1 or 2
-        pairings = list(combinations_with_replacement(species_indices, 2)) + [(i,) for i in species_indices]
+        for j, rxn in enumerate(self.reactions):
+            val = self.k[j]
+            for i in rxn.reactants:
+                val *= c[i]
+            r[j] = val
 
-        for reactants in pairings:
-            lhs = sum(composition_matrix[:, r] for r in reactants)
+        return r
 
-            for products in pairings:
-                rhs = sum(composition_matrix[:, p] for p in products)
 
-                if np.array_equal(lhs, rhs) and set(reactants) != set(products):
-                    # sorted tuples prevent duplicates due to ordering
-                    reactions.add(Reaction(
-                        reactants=tuple(sorted(reactants)),
-                        products=tuple(sorted(products))
-                    ))
+    def simulate(self):
 
-        return list(reactions)
-    
-    
-    def prune_unused_species(self, composition_matrix, partition, reactions):
-        """
-        Remove species not participating in any reaction.
+        S = self._build_stoichiometric_matrix()
 
-        Returns:
-            - pruned composition_matrix
-            - pruned partition
-            - mapping from old to new species indices (optional)
-        """
-        used_species = set()
-        for r in reactions:
-            used_species.update(r.reactants)
-            used_species.update(r.products)
-        used_species = sorted(used_species)
+        def rhs(t, c):
+            return S @ self._rate_vector(c)
 
-        # Prune matrix
-        pruned_matrix = composition_matrix[:, used_species]
+        t_eval = np.linspace(0, self.t_end, self.n_timepoints)
 
-        # Rebuild partition species list
-        species = partition.species
-        used_names = [species[i] for i in used_species]
-        new_inputs = [s for s in used_names if s in partition.inputs]
-        new_hidden = [s for s in used_names if s in partition.hidden]
-        new_output = partition.output if partition.output in \
-        used_names else None
-
-        pruned_partition = Partition(
-            inputs=new_inputs,
-            hidden=new_hidden,
-            output=new_output
+        sol = solve_ivp(
+            rhs,
+            (0, self.t_end),
+            self.c0,
+            t_eval=t_eval,
+            method="LSODA",
+            rtol = 1e-6,
+            atol = 1e-9,
         )
 
-        return pruned_matrix, pruned_partition
+        if not sol.success:
+            raise RuntimeError(f"ODE solver failed: {sol.message}")
+
+
+        C = sol.y.T
+        sigma = np.std(C, axis=0) + 1e-12
+        C_noisy = C + self.noise_level * sigma * self.rng.standard_normal(C.shape)
+        C_noisy = np.clip(C_noisy, 0.0, np.inf)
+
+
+        return t_eval, C_noisy
+
+
     
     def setup_hardcoded_1latent_example(self):
         """
@@ -289,7 +273,7 @@ class SyntheticDataGenerator:
             [1, 0, 1, 1, 0],  # Atom A
             [0, 1, 1, 1, 0],  # Atom B
             [0, 1, 1, 0, 1],  # Atom C
-        ])
+        ], dtype = int)
 
         # Optional check
         assert self.is_column_space_reachable(composition_matrix, partition), "Composition not reachable"
@@ -304,163 +288,73 @@ class SyntheticDataGenerator:
 
 
     
+    def generate_sample(
+        self,
+        resample_initial: bool = True,
+    ):
+
+        if resample_initial:
+            self.c0 = self._sample_c0()
+
+        t, C = self.simulate()
+
+        out_idx = self.partition.output_indices[0]
+
+        return {
+            "t": torch.tensor(t, dtype=torch.float32),
+            "c0": torch.tensor(self.c0.copy(), dtype=torch.float32),
+            "y": torch.tensor(C[:, out_idx], dtype=torch.float32),
+            "full": torch.tensor(C, dtype=torch.float32),
+            "label": {
+                "has_hidden": self.partition.n_hidden > 0,
+                "n_hidden": self.partition.n_hidden,
+                "k": self.k,
+                "c0": self.c0.copy(),
+                "reactions": self.reactions,
+            },
+        }
+
+
+
+
+
     
-    def enumerate_label_only_reactions(species: list[str], max_order=2):
-        """
-        Enumerate all possible reactions up to max_order (default: bimolecular)
-        without atom constraints, using just species names.
-        
-        Returns:
-            list[Reaction]: All nontrivial reactions (reactants ≠ products)
-        """
-        # All uni/bi-molecular reactant and product combinations
-        reactant_combos = list(combinations_with_replacement(species, r=1)) + \
-                        list(combinations_with_replacement(species, r=2))
-        product_combos = list(combinations_with_replacement(species, r=1)) + \
-                        list(combinations_with_replacement(species, r=2))
-        
-        reactions = set()
-        for r in reactant_combos:
-            for p in product_combos:
-                if sorted(r) != sorted(p):  # exclude trivial identity reactions
-                    reactions.add(Reaction(
-                        reactants=tuple(sorted(r)),
-                        products=tuple(sorted(p))
-                    ))
-        
-        return sorted(reactions, key=lambda rxn: (rxn.reactants, rxn.products))
+    def generate_batch(self, batch_size: int):
+        samples = [self.generate_sample() for _ in range(batch_size)]
+
+        # shared time grid (T,)
+        t = samples[0]["t"]
+
+        # outputs
+        y = torch.stack([s["y"] for s in samples], dim=0)              # (B, T)
+        full = torch.stack([s["full"] for s in samples], dim=0)        # (B, T, n_species)
+
+        # initial conditions
+        c0 = torch.stack([s["c0"] for s in samples], dim=0)        # (B, n_species)                                                    # (B,)
+
+        # metadata / labels (keep python objects)
+        labels = [s["label"] for s in samples]
+        k = torch.tensor([lab["k"] for lab in labels], dtype=torch.float32)  # (B, n_rxns)
+
+        return {
+            "t": t,                        # (T,)
+            "y": y,                        # (B, T)
+            "full": full,                  # (B, T, n_species)
+            "c0": c0,                  # (B, n_species)
+            "label": labels,
+            "k": k,                        # (B, n_rxns)
+        }
+
+
+
     
-    def generate_all_mass_conserving_reactions(partition: Partition, composition_matrix: np.ndarray):
-        """
-        Given a species partition and composition matrix (atoms × species),
-        generate all stoichiometrically valid reactions (1 or 2 reactants → 1 or 2 products).
-        """
+    def generate_dataset(self, num_samples: int, save_path: str | None = None):
+        batch = self.generate_batch(num_samples)
 
-        n_species = partition.n_species
-        reactions = set()
+        if save_path is not None:
+            # labels are python objects; torch.save can handle them
+            torch.save(batch, save_path)
 
-        # Species indices
-        indices = list(range(n_species))
+        return batch
 
-        # Reaction forms: uni/bi → uni/bi
-        reactant_combos = list(combinations_with_replacement(indices, 2)) + [(i,) for i in indices]
-        product_combos  = list(combinations_with_replacement(indices, 2)) + [(i,) for i in indices]
-
-        for reactants in reactant_combos:
-            lhs = sum(composition_matrix[:, i] for i in reactants)
-
-            for products in product_combos:
-                rhs = sum(composition_matrix[:, i] for i in products)
-
-                # Valid if atom-balanced and not a trivial identity
-                if np.array_equal(lhs, rhs) and set(reactants) != set(products):
-                    reactions.add(Reaction(
-                        reactants=tuple(sorted(reactants)),
-                        products=tuple(sorted(products))
-                    ))
-
-        return list(reactions)
     
-    def generate_sample(self, params):
-        """
-        Generate a single synthetic data sample.
-        Args:
-            params (dict): Parameters for sample generation. Includes:
-                - 'class_label': Whether or not there are hidden species
-                - 'sample_label': A unique label for the sample
-                - list of reactions
-                - Inital concentration in nM for each species across the reactions
-                - rate constants (for nM input concentrations) for each reaction
-                
-        
-        Returns:
-            tuple: (data, label) pair where data is a tensor of species concentrations and label is
-        """
-        # TODO: Implement single sample generation
-        # This should include:
-        # - Generating synthetic features (e.g., random patterns, shapes)
-        # - Assigning appropriate labels
-        # - Adding noise for robustness
-        pass
-    
-    def generate_batch(self, batch_size):
-        """
-        Generate a batch of synthetic data samples.
-        
-        Args:
-            batch_size (int): Number of samples to generate
-            
-        Returns:
-            tuple: (data_batch, labels_batch) where data_batch is a tensor of shape
-                   (batch_size, *data_shape) and labels_batch is a tensor of shape (batch_size,)
-        """
-        # TODO: Implement batch generation
-        # This should include:
-        # - Calling generate_sample multiple times
-        # - Stacking samples into a batch tensor
-        pass
-    
-    def generate_dataset(self, num_samples, save_path=None):
-        """
-        Generate a complete synthetic dataset.
-        
-        Args:
-            num_samples (int): Total number of samples to generate
-            save_path (str, optional): Path to save the generated dataset
-            
-        Returns:
-            tuple: (data, labels) tensors for the entire dataset
-        """
-        # TODO: Implement full dataset generation
-        # This should include:
-        # - Generating all samples
-        # - Optionally saving to disk
-        # - Returning the complete dataset
-        pass
-    
-    def add_augmentation(self, data):
-        """
-        Apply data augmentation to synthetic data.
-        
-        Args:
-            data: Input data tensor
-            
-        Returns:
-            Augmented data tensor
-        """
-        # TODO: Implement augmentation strategies
-        # This should include:
-        # - Rotation
-        # - Scaling
-        # - Translation
-        # - Color jittering (if applicable)
-        pass
-
-
-def create_synthetic_dataset(config):
-    """
-    Create a synthetic dataset based on configuration.
-    
-    Args:
-        config (dict): Configuration dictionary containing:
-            - data_shape: Shape of data samples
-            - num_classes: Number of classes
-            - num_train_samples: Number of training samples
-            - num_val_samples: Number of validation samples
-            - num_test_samples: Number of test samples
-            - noise_level (optional): Level of noise to add (default: 0.1)
-            
-    Returns:
-        dict: Dictionary containing train, validation, and test datasets
-        
-    Note:
-        Missing required keys will raise KeyError during implementation.
-        Optional keys will use default values if not provided.
-    """
-    # TODO: Implement dataset creation from config
-    # This should include:
-    # - Validating required configuration keys
-    # - Creating generator instances
-    # - Generating train/val/test splits
-    # - Returning organized datasets
-    pass

@@ -184,7 +184,7 @@ class SyntheticDataGenerator:
 
         # Use indices [0,1,2] for species in partition.species
         reactions = [
-            Reaction(reactants=(0, 1), products=(2,)),  # S_1 + S_2 → S_3 + S_4
+            Reaction(reactants=(0, 1), products=(2,)),  # S_1 + S_2 → S_out
         ]
 
         return composition_matrix, partition, reactions
@@ -204,8 +204,8 @@ class SyntheticDataGenerator:
         # Atoms: A, B, and C
         composition_matrix = np.array([
             [1, 0, 1, 1, 0],  # Atom A
-            [0, 1, 1, 1, 0],  # Atom B
-            [0, 1, 1, 0, 1],  # Atom C
+            [0, 1, 1, 0, 1],  # Atom B
+            [0, 1, 1, 1, 0],  # Atom C
         ], dtype = int)
 
 
@@ -259,7 +259,7 @@ class SyntheticDataGenerator:
 
         # outputs
         y = torch.stack([s["y"] for s in samples], dim=0)              # (B, T)
-        full = torch.stack([s["full"] for s in samples], dim=0)        # (B, T, n_species)
+        y_full = torch.stack([s["y_full"] for s in samples], dim=0)        # (B, T, n_species)
         c0 = torch.stack([s["c0"] for s in samples], dim=0)            # (B, n_species)
 
         # metadata / labels (keep python objects)
@@ -269,7 +269,7 @@ class SyntheticDataGenerator:
         return {
             "t": t,                        # (T,)
             "y": y,                        # (B, T)
-            "full": full,                  # (B, T, n_species)
+            "y_full": y_full,                  # (B, T, n_species)
             "c0": c0,                  # (B, n_species)
             'A': torch.tensor(self.composition_matrix, dtype=torch.float32),  # (M, N)
             "label": labels,

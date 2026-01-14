@@ -51,6 +51,6 @@ class CRNN(nn.Module):
     def forward(self, t, c0):
         t = t.flatten()                 # ensure 1D
         C0 = c0.clamp_min(self.eps)
-        C_traj = odeint(self.rhs_C, C0, t, method="dopri5", rtol=1e-6, atol=1e-8)# (T,B,S)
+        C_traj = odeint(self.rhs_C, C0, t, method="dopri5", rtol=1e-7, atol=1e-9)# (T,B,S)
         return C_traj.permute(1,0,2)    # (B,T,S)
 

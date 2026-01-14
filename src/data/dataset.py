@@ -19,18 +19,17 @@ Transform = Callable[[Sample], Sample]
 class Normalize(object):
     """Rescale all concentration by the largest concentration in the dataset.
     """
+    def __init__(self, max_concentration):
+        self.max_c0 = max_concentration
 
     def __call__(self, sample):
         # find max concentration across all c0 values
-        c0 = sample["c0"]
-        max_c0 = torch.max(c0)
         new_sample = sample.copy()
-        new_sample["c0"] = c0 / max_c0
+        new_sample["c0"] = sample["c0"] / self.max_c0
         if "y_full" in sample:
-            new_sample["y_full"] = sample["y_full"] / max_c0
+            new_sample["y_full"] = sample["y_full"] / self.max_c0
         if "y" in sample:
-            new_sample["y"] = sample["y"] / max_c0
-
+            new_sample["y"] = sample["y"] / self.max_c0
         return new_sample
 
 
@@ -118,8 +117,8 @@ class KineticDataset(Dataset):
                 else:
                     sample[key] = val
 
-        if self.return_full and "full" in self.batch:
-            sample["full"] = self.batch["full"][idx]
+        if self.return_full and "y_full" in self.batch:
+            sample["y_full"] = self.batch["y_full"][idx]
 
         if self.return_label and "label" in self.batch:
             # labels is a list[dict]

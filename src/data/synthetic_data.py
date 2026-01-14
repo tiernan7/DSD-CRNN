@@ -237,7 +237,7 @@ class SyntheticDataGenerator:
             "t": torch.tensor(t, dtype=torch.float32),
             "c0": torch.tensor(self.c0.copy(), dtype=torch.float32),
             "y": torch.tensor(C[:, out_idx], dtype=torch.float32),
-            "full": torch.tensor(C, dtype=torch.float32),
+            "y_full": torch.tensor(C, dtype=torch.float32),
             "label": {
                 "mechanism": self.mechanism,
                 "k": self.k,

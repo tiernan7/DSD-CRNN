@@ -22,9 +22,9 @@ class CRNN(nn.Module):
         K = B.shape[1]
         R = num_reactions
 
-        # IMPORTANT: nonzero init
+        # nonzero init
         self.W = nn.Parameter(1e-2 * torch.randn(K, R))
-        self.log_k = nn.Parameter(torch.zeros(R))
+        self.log_k = nn.Parameter(torch.full((R,), np.log(2e-4), dtype=torch.float32))
 
         self.eps = eps
 
@@ -51,6 +51,6 @@ class CRNN(nn.Module):
     def forward(self, t, c0):
         t = t.flatten()                 # ensure 1D
         C0 = c0.clamp_min(self.eps)
-        C_traj = odeint(self.rhs_C, C0, t, method="dopri5")  # (T,B,S)
+        C_traj = odeint(self.rhs_C, C0, t, method="dopri5", rtol=1e-6, atol=1e-8)# (T,B,S)
         return C_traj.permute(1,0,2)    # (B,T,S)
 

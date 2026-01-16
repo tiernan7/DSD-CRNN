@@ -7,6 +7,7 @@ for training and testing the models when real data is not available.
 
 from dataclasses import dataclass
 from unicodedata import name
+from networkx import sigma
 from numpy.linalg import lstsq
 import numpy as np
 from numpy.linalg import matrix_rank
@@ -132,8 +133,120 @@ class SyntheticDataGenerator:
         return r
 
 
-    def simulate(self):
 
+    def sample_noise(self, C):
+        sigma = self._compute_sigma(C)
+        C_noisy = C + self.noise_level * sigma * self.rng.standard_normal(C.shape)
+        return C_noisy
+
+    
+    
+    
+
+    @staticmethod
+    def _compute_sigma(C):
+        sigma = np.std(C, axis=0) + 1e-12
+        return sigma
+
+    def _compute_sensitivites(self, c0):
+        """
+        Compute sensitivities of concentrations to parameters.
+        Usinging the formulas: 
+            t: timepoints
+            c0: initial concentrations (num_species,)
+            phi = log(k) (num_params,)
+            f(t) = dC/dt (num_species,)
+            U = dC/dphi (num_species, num_params)
+            A = df/dC (num_species, num_species)
+            B = df/dphi (num_species, num_params)
+            dU/dt = df/dphi = A U + B (num_species, num_params)
+             = (df/dC) dC/dphi + df/dphi
+
+            
+            Assumes multiplicities are always 1
+        """
+        k = self.k
+        n_times = self.n_timepoints
+        n_species = len(self.partition.species)
+        n_params = len(self.k)
+        gamma = self._build_stoichiometric_matrix() #(n_species,  n_reactions) 
+        num_reactions = len(self.reactions) 
+        U0 = 0.0 * np.ones((n_species, n_params))
+        alpha = np.zeros((n_species, num_reactions))
+        for r in range(gamma.shape[1]):
+            for s in self.reactions[r].reactants:
+                alpha[s, r] += 1 # 
+                
+                
+        def Bc(c, gamma):
+            # df(t)/dphi (num_species, num_params)
+            v = self._rate_vector(c)  # (num_params,)
+            B = []
+            for ri in range(gamma.shape[1]):
+                bi = gamma[:, ri] * v[ri]
+                B.append(bi)
+            return np.array(B).T
+                
+        def Ac(c, gamm, alpha):
+            # df(t)/dC (num_species, num_species)
+            V = [] # (num_reaction, num_species)
+            for r in range(gamma.shape[1]):
+                row = []
+                for l in range(len(c)):
+                    if not(alpha[l][r] > 0):
+                        row.append(0.0)
+                    else:
+                        prod = np.prod([c[j] for j in self.reactions[r].reactants if j != l])
+                        row.append(self.k[r] * prod)
+                V.append(row)
+            V = np.array(V)
+            return gamma @ V
+        
+        def rhs(t, z, gamma, alpha):
+            c = z[:n_species]
+            
+            U_flat = z[n_species:]
+            
+            
+            U = U_flat.reshape((n_species, n_params))
+            A = Ac(c, gamma, alpha)
+            B = Bc(c, gamma)
+            
+            dc_dt = gamma @ self._rate_vector(c)
+            dU_dt = (A @ U + B).flatten()
+            
+            dz_dt = np.concatenate([dc_dt, dU_dt])
+            return dz_dt
+        
+        z0 = np.concatenate([c0, U0.flatten()])
+        S = solve_ivp(rhs, (0, self.t_end), z0, t_eval=np.linspace(0, self.t_end, self.n_timepoints), args=(gamma, alpha), method="LSODA", rtol=1e-6, atol=1e-9)
+        C = S.y[:n_species, :].T
+        U = S.y[n_species:, :].T.reshape((n_times, n_species, n_params))
+        return C, U
+                      
+    def _compute_fim_output(self, c0, summed = True):
+        """
+        Compute Fisher Information Matrix.
+        FIM_ij = sum_t (1/sigma_t^2) * (dC_out/dphi_i)T(dC_out/dphi_j) (outer prod)
+        where sigma_t is the noise std at time t
+        """
+        C, U = self._compute_sensitivites(c0)
+        out_idx = self.partition.output_indices[0]
+        sigma_out = self._compute_sigma(C)[out_idx]
+        fim = np.zeros((self.n_timepoints, len(self.k), len(self.k)))
+        for ti in range(self.n_timepoints):
+            Ut = U[ti, out_idx]
+            fim[ti] += (1 / (sigma_out ** 2)) * np.outer(Ut, Ut)
+        if summed:
+            fim = np.sum(fim, axis=0)
+        return C, fim
+     
+    def simulate_mean(self):
+        """
+        Simulate the ODE system without noise.
+        Returns:
+            t_eval (np.ndarray): Time points of shape (n_timepoints,)
+            C (np.ndarray): Concentrations of shape (n_timepoints, n_species)"""
         S = self._build_stoichiometric_matrix()
 
         def rhs(t, c):
@@ -156,12 +269,9 @@ class SyntheticDataGenerator:
 
 
         C = sol.y.T
-        sigma = np.std(C, axis=0) + 1e-12
-        C_noisy = C + self.noise_level * sigma * self.rng.standard_normal(C.shape)
-        C_noisy = np.clip(C_noisy, 0.0, np.inf)
 
 
-        return t_eval, C_noisy
+        return t_eval, C
 
 
     
@@ -229,15 +339,16 @@ class SyntheticDataGenerator:
             self.c0[i] = self._sample_c0(self.initial_concentration_ranges[name])
 
         
-        t, C = self.simulate()
+        t, C = self.simulate_mean()
+        C_noisy = self.sample_noise(C)
 
         out_idx = self.partition.output_indices[0]
 
         return {
             "t": torch.tensor(t, dtype=torch.float32),
             "c0": torch.tensor(self.c0.copy(), dtype=torch.float32),
-            "y": torch.tensor(C[:, out_idx], dtype=torch.float32),
-            "y_full": torch.tensor(C, dtype=torch.float32),
+            "y": torch.tensor(C_noisy[:, out_idx], dtype=torch.float32),
+            "y_full": torch.tensor(C_noisy, dtype=torch.float32),
             "label": {
                 "mechanism": self.mechanism,
                 "k": self.k,

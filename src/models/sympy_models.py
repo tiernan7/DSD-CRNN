@@ -24,16 +24,17 @@ class OneStep:
 class OneStepLatent:
     def __init__(self, measure=("so",)):
         k1, k2 = sym.symbols("k1 k2")
-        s1, s2, s3, so = sym.symbols("s1 s2 s3 so")
+        s1, s2, s3, s4, so = sym.symbols("s1 s2 s3 s4 so")
 
         self.p = [[k1], [k2]]
-        self.x = [[s1], [s2], [s3], [so]]
+        self.x = [[s1], [s2], [s3], [s4], [so]]
         self.u = []
         self.w = []
-        self.f = [[-k1*s1*s1],
-                  [-k2*s1*s1],
+        self.f = [[-k1*s1*s2],
+                  [-k1*s1*s2],
                   [ k1*s1*s2 - k2*s3],
-                  [ k2*s2]]
+                   [k2*s3],
+                  [ k2*s3]]
 
         self.h = _select_outputs(self.x, measure)
         self.name = "one_step_latent"

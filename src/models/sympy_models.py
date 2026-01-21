@@ -42,6 +42,28 @@ class OneStepLatent:
     def as_strikepy_dict(self):
         return {"p": self.p, "x": self.x, "u": self.u, "w": self.w, "f": self.f, "h": self.h}
     
+class BimolLatent:
+    def __init__(self, measure=("so",)):
+        k1, k2 = sym.symbols("k1 k2")
+        s1, s2, s3, s4, so = sym.symbols("s1 s2 s3 s4 so")
+
+        self.p = [[k1], [k2]]
+        self.x = [[s1], [s2], [s3], [s4], [so]]
+        self.u = []
+        self.w = []
+        self.f = [[-k1*s1*s2],
+                  [-k1*s1*s2],
+                  [ k1*s1*s2 - k2*s3*s4],
+                   [-k2*s3*s4],
+                  [ k2*s3*s4]]
+
+        self.h = _select_outputs(self.x, measure)
+        self.name = "bimol_latent"
+
+    def as_strikepy_dict(self):
+        return {"p": self.p, "x": self.x, "u": self.u, "w": self.w, "f": self.f, "h": self.h}
+      
+    
 
 class TwoStepUni:
     def __init__(self, measure=("so",)):

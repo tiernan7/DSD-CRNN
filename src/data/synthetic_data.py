@@ -6,15 +6,19 @@ for training and testing the models when real data is not available.
 """
 
 from dataclasses import dataclass
+import itertools
+import itertools
+from operator import le
 from unicodedata import name
 from networkx import sigma
 from numpy.linalg import lstsq
 import numpy as np
-from numpy.linalg import matrix_rank
+from numpy.linalg import matrix_rank, svd
 import torch
 from  itertools import combinations_with_replacement
 from scipy.integrate import solve_ivp
-
+import multiprocessing
+from multiprocessing import Pool
 @dataclass
 class Partition:
     inputs: list[str]
@@ -47,19 +51,19 @@ class SyntheticDataGenerator:
         mechanism: str,
         reaction_rates,
         initial_concentration_ranges: dict,
+        E_bounds: tuple[float, float],
         noise_level=0.05,
         t_end=40.0,
         n_timepoints=50,
         seed=None,
     ):
         
-        
         self.rng = np.random.default_rng(seed)
         self.mechanism = mechanism
         self.k = reaction_rates
         self.initial_concentration_ranges = initial_concentration_ranges
         self.noise_level = noise_level
-
+        self.E_bounds = E_bounds
         self.t_end = t_end
         self.n_timepoints = n_timepoints
 
@@ -159,7 +163,8 @@ class SyntheticDataGenerator:
             U = dC/dphi (num_species, num_params)
             A = df/dC (num_species, num_species)
             B = df/dphi (num_species, num_params)
-            dU/dt = df/dphi = A U + B (num_species, num_params)
+            df/dphi = df/dk * dk/dphi = df/dk * k
+            dU/dt = A U + B (num_species, num_params)
              = (df/dC) dC/dphi + df/dphi
 
             
@@ -219,7 +224,7 @@ class SyntheticDataGenerator:
             return dz_dt
         
         z0 = np.concatenate([c0, U0.flatten()])
-        S = solve_ivp(rhs, (0, self.t_end), z0, t_eval=np.linspace(0, self.t_end, self.n_timepoints), args=(gamma, alpha), method="LSODA", rtol=1e-6, atol=1e-9)
+        S = solve_ivp(rhs, (0, self.t_end), z0, t_eval=np.linspace(0, self.t_end, self.n_timepoints), args=(gamma, alpha), method="BDF", rtol=1e-10, atol=1e-12)
         C = S.y[:n_species, :].T
         U = S.y[n_species:, :].T.reshape((n_times, n_species, n_params))
         return C, U
@@ -239,7 +244,45 @@ class SyntheticDataGenerator:
             fim[ti] += (1 / (sigma_out ** 2)) * np.outer(Ut, Ut)
         if summed:
             fim = np.sum(fim, axis=0)
-        return C, fim
+        return fim
+     
+     
+     
+     
+    @staticmethod
+    def _SVD(fim):
+        U, s, Vh = svd(fim)
+        return U, s, Vh
+     
+    @staticmethod
+    def _restric_fim(svd_fim):
+        U, s, Vh = svd_fim
+        if s.ndim == 1:
+            rank = s
+            U_r = U
+            s_r = s
+            Vh_r = Vh
+        else:
+            rank = len([i for i in np.diagonal(s) if i > 1e-8])
+            U_r = U[:, :rank]
+            s_r = s[:rank]
+            Vh_r = Vh[:rank, :]
+        fim_restricted = U_r @ np.diag(s_r) @ Vh_r
+        return fim_restricted
+     
+     
+    
+    @staticmethod
+    def _E_from_fim(svd_fim):
+        """
+        Compute the E-optimality criterion (trace of inverse FIM).
+        """
+        U, s, Vh = svd_fim
+        if s.ndim == 1:
+            eigenvalues = s**2
+        else:
+            eigenvalues = [s**2 for s in np.diagonal(s) if s > 1e-8]
+        return np.min(eigenvalues)
      
     def simulate_mean(self):
         """
@@ -328,16 +371,57 @@ class SyntheticDataGenerator:
         return composition_matrix, partition, reactions
 
 
+    def generate_admisable_c0(self, E_bound: tuple[float, float]):
+        stop = False
+        attempt = 0
+        successful_c0 = []
+        while attempt < 1000:
+            c0 = [self._sample_c0(self.initial_concentration_ranges[s]) for s in self.partition.species]
+            fim = self._compute_fim_output(c0, summed=True)
+            svd_fim = self._SVD(fim)
+            fim_restricted = self._restric_fim(svd_fim)
+            E = self._E_from_fim(self._SVD(fim_restricted))
+            if E_bound[0] < E < E_bound[1]:
+                return c0
+            attempt += 1
+        
+        raise RuntimeError("Could not find admissable c0 in 1000 attempts")
+    
+    
+    def grid_search(self, 
+                    sampling_dim,
+                    c_ranges,
+                    k_ranges,
+                    parallel = False):
+        samples = []
+        c0 = [np.linspace(c_ranges[s][0], c_ranges[s][1], sampling_dim) if not c_ranges[s][0] == c_ranges[s][1] else [c_ranges[s][0]] for s in range(len(self.partition.species))]
+        k = [np.linspace(k_ranges[r][0], k_ranges[r][1], sampling_dim) if not k_ranges[r][0] == k_ranges[r][1] else [k_ranges[r][0]] for r in range(len(self.reactions))]
+        
+        cartesian_prod = itertools.product(*c0, *k)
+        
+        for sample in cartesian_prod:
+            c0 = sample[:len(self.partition.species)]
+            k = sample[len(self.partition.species):]
+
+            fim = self._compute_fim_output(c0, summed=True)
+            svd_fim = self._SVD(fim)
+            fim_restricted = self._restric_fim(svd_fim)
+            E = self._E_from_fim(self._SVD(fim_restricted))
+            samples.append({
+                "c0": c0,
+                "k": k,
+                "E": E
+            })
+
+    
+        return samples
+
     
     def generate_sample(
         self,
     ):
 
-        self.c0 = [0.0] * len(self.partition.species)
-        for name in self.partition.inputs:
-            i = self.partition.species.index(name)
-            self.c0[i] = self._sample_c0(self.initial_concentration_ranges[name])
-
+        self.c0 = self.generate_admisable_c0(E_bound=self.E_bounds)
         
         t, C = self.simulate_mean()
         C_noisy = self.sample_noise(C)
@@ -349,6 +433,7 @@ class SyntheticDataGenerator:
             "c0": torch.tensor(self.c0.copy(), dtype=torch.float32),
             "y": torch.tensor(C_noisy[:, out_idx], dtype=torch.float32),
             "y_full": torch.tensor(C_noisy, dtype=torch.float32),
+            "E": self._E_from_fim(self._SVD(self._compute_fim_output(self.c0, summed=True))),
             "label": {
                 "mechanism": self.mechanism,
                 "k": self.k,
@@ -386,6 +471,7 @@ class SyntheticDataGenerator:
             "label": labels,
             "k": k,                        # (B, n_rxns)
             "out_index": self.partition.output_indices[0],  # (1,)
+            "E": torch.tensor([s["E"] for s in samples], dtype=torch.float32),  # (B,)
         }
 
 

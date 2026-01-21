@@ -3,7 +3,21 @@ Data loader utilities for creating train/validation/test loaders.
 """
 
 from torch.utils.data import DataLoader
+from src.data.dataset import KineticDataset
 import torch
+
+
+def load_data(dataset, n_train: int, n_val: int, seed: int = 42):
+    
+    # Get the data loaders ready
+    n_total = len(dataset)
+    n_test = n_total - n_train - n_val
+
+    train_ds, test_ds, val_ds = torch.utils.data.random_split(
+        dataset, [n_train, n_test, n_val],
+        generator=torch.Generator().manual_seed(42)
+    )
+    return train_ds, val_ds, test_ds
 
 def get_data_loaders(
     train_dataset,

@@ -1,0 +1,9 @@
+{
+    "lr": 0.05,
+    "n_train": 1,
+    "n_val": 1,
+    "patience": 200,
+    "min_delta": 0.0,
+    "warmup": 100,
+    "epochs": 100000
+}

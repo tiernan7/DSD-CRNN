@@ -5,7 +5,7 @@ import numpy as np
 from scipy.linalg import null_space
 
 class CRNN(nn.Module):
-    def __init__(self, N: np.ndarray, num_reactions: int, eps: float = 1e-12):
+    def __init__(self, B: np.ndarray, num_reactions: int, eps: float = 1e-12):
         super().__init__()
         # A: (M, N) M = number of atom types, N = number of species
         # B: (N, K) K = dimension of null space
@@ -15,8 +15,7 @@ class CRNN(nn.Module):
         # log_k: (R,) log reaction rates
         # C: (X, N) concentrations for X batch samples
         
-        
-        B = torch.tensor(null_space(N).astype(np.float32))  # (N, K)
+        B = torch.tensor(B, dtype=torch.float32)
         self.register_buffer("B", B)
         N = B.shape[0]
         K = B.shape[1]
@@ -51,6 +50,6 @@ class CRNN(nn.Module):
     def forward(self, t, c0):
         t = t.flatten()                 # ensure 1D
         C0 = c0.clamp_min(self.eps)
-        C_traj = odeint(self.rhs_C, C0, t, method="dopri5", rtol=1e-8, atol=1e-10)# (T,B,S)
+        C_traj = odeint(self.rhs_C, C0, t, method="dopri5", rtol=1e-10, atol=1e-12)# (T,B,S)
         return C_traj.permute(1,0,2)    # (B,T,S)
 

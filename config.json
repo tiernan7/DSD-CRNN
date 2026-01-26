@@ -2,8 +2,8 @@
     "lr": 0.05,
     "n_train": 1,
     "n_val": 1,
-    "patience": 200,
+    "patience": 10,
     "min_delta": 0.0,
-    "warmup": 100,
+    "warmup": 0,
     "epochs": 100000
 }

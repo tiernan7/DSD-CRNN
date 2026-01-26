@@ -90,9 +90,11 @@ class KineticDataset(Dataset):
         """Get shared time grid tensor (T,)"""
         return self.batch["t"]
 
-    def get_A(self) -> torch.Tensor:
-        """Get stoichiometric matrix A (M, N)"""
-        return self.batch["A"]
+    def get_B_null_true(self) -> torch.Tensor:
+        return self.batch["B_null_true"]
+
+    def get_B_null_full(self) -> torch.Tensor:
+        return self.batch["B_null_full"]
     
     def get_output_index(self) -> torch.Tensor:
         """Get output index tensor (1,)"""

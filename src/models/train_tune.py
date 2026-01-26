@@ -13,10 +13,15 @@ import tempfile
 from ray.tune import Checkpoint
 
 
-def train(config, dataset, report = 100):
+def train(config, dataset, null_choice, report = 100):
     # global constants pulled from the *base dataset*
-    A_control = dataset.get_A().detach().cpu().numpy()         # for scipy.null_spa
-
+    if null_choice == 'full':
+        B = dataset.get_B_null_full().detach().cpu().numpy()         # for 
+        extra_dims = B.shape[1] - dataset.get_B_null_true().detach().cpu().numpy().shape[1]
+    elif null_choice == 'true':
+        B = dataset.get_B_null_true().detach().cpu().numpy()         # for
+    else:
+        raise ValueError(f"Invalid null_choice: {null_choice}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_ind = dataset.get_output_index()
     out_ind = int(out_ind.item()) if torch.is_tensor(out_ind) else int(out_ind)
@@ -30,7 +35,7 @@ def train(config, dataset, report = 100):
     min_delta = config.get("min_delta", 0.0)
     warmup = config.get("warmup", 0)
     
-    model = CRNN(A_control, num_reactions).to(device)
+    model = CRNN(B, num_reactions).to(device)
 
     train_ds, val_ds, test_ds = load_data(dataset, n_train, n_val)
 
@@ -57,6 +62,9 @@ def train(config, dataset, report = 100):
 
         for batch_idx, batch in enumerate(train_loader):
             c0 = batch["c0"].to(device).float()
+            if null_choice == 'full':
+                # Add columns of zeros to c0 to match full null space
+                c0 = torch.cat([c0, torch.zeros(c0.shape[0], extra_dims, device=c0.device)], dim=1)
             y_true = batch["y"].to(device).float()
 
             optimizer.zero_grad(set_to_none=True)
@@ -78,6 +86,9 @@ def train(config, dataset, report = 100):
 
             for batch_idx, batch in enumerate(val_loader):
                 c0 = batch["c0"].to(device).float()
+                if null_choice == 'full':
+                    # Add columns of zeros to c0 to match full null space
+                    c0 = torch.cat([c0, torch.zeros(c0.shape[0], extra_dims, device=c0.device)], dim=1)
                 y_true = batch["y"].to(device).float()
 
                 y_full = model(t_train, c0)
